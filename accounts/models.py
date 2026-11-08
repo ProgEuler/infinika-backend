@@ -1,8 +1,9 @@
+import hmac
 import secrets
 from datetime import timedelta
 from django.contrib.auth.base_user import AbstractBaseUser, BaseUserManager
 from django.contrib.auth.models import PermissionsMixin
-from django.db import models
+from django.db import models, transaction
 from django.utils import timezone
 
 
@@ -76,9 +77,12 @@ class User(AbstractBaseUser, PermissionsMixin):
 class OneTimePassword(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="otps")
     purpose = models.CharField(max_length=20, choices=OtpPurpose.choices)
+    MAX_FAILED_ATTEMPTS = 5
+
     code = models.CharField(max_length=4)
     expires_at = models.DateTimeField()
     is_used = models.BooleanField(default=False)
+    failed_attempts = models.PositiveSmallIntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -109,6 +113,37 @@ class OneTimePassword(models.Model):
         if not self.is_used:
             self.is_used = True
             self.save(update_fields=["is_used"])
+
+    @classmethod
+    def verify(cls, user, purpose, code):
+        """
+        Check `code` against the user's single active OTP for `purpose`.
+
+        Every wrong guess is counted; after MAX_FAILED_ATTEMPTS the OTP is
+        burned and the user must request a new one. This is what stops the
+        4-digit code space from being brute-forced. Returns the OTP on
+        success (already marked used), otherwise None.
+        """
+        with transaction.atomic():
+            otp = (
+                cls.objects.select_for_update()
+                .filter(user=user, purpose=purpose, is_used=False)
+                .order_by("-created_at")
+                .first()
+            )
+            if otp is None or otp.is_expired:
+                return None
+
+            if not hmac.compare_digest(str(otp.code), str(code)):
+                otp.failed_attempts += 1
+                if otp.failed_attempts >= cls.MAX_FAILED_ATTEMPTS:
+                    otp.is_used = True
+                otp.save(update_fields=["failed_attempts", "is_used"])
+                return None
+
+            otp.is_used = True
+            otp.save(update_fields=["is_used"])
+            return otp
 
 
 class AppLanguage(models.Model):

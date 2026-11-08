@@ -1,7 +1,0 @@
-session_id: 80
-teacher: bakuvonderkid@gmail.com
-teacher_profile_id: 2
-avail_filters: {'day_of_week': 'Friday', 'start_time': datetime.time(11, 0), 'teacher_id': 2}
-available_teachers: []
-All availabilities for this teacher:
-- Tuesday 07:00:00

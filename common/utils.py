@@ -1,7 +1,11 @@
+import logging
 """Reusable helpers for API operations."""
 
 from .responses import success_response, error_response
 
+
+
+logger = logging.getLogger(__name__)
 
 def format_validation_errors(errors):
     if not errors:
@@ -64,7 +68,7 @@ def send_expo_push_notification(push_tokens, title, body, data=None):
         response.raise_for_status()
         return response.json()
     except Exception as e:
-        print(f"Error sending push notification: {e}")
+        logger.warning("Error sending push notification: %s", e)
         return None
 
 

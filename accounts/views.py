@@ -1,9 +1,11 @@
+import logging
+
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 from django.db import transaction
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status
-from rest_framework.decorators import api_view, permission_classes
+from rest_framework.decorators import api_view, permission_classes, throttle_classes
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -32,9 +34,19 @@ from accounts.serializers import (
 )
 from accounts.utils import issue_and_send_otp
 from common.responses import created_response, error_response, success_response
+from common.throttles import (
+    OTP_SEND_THROTTLES,
+    OTP_VERIFY_THROTTLES,
+    SignInThrottle,
+    SignUpThrottle,
+)
 from common.utils import send_expo_push_notification
 
 User = get_user_model()
+logger = logging.getLogger(__name__)
+
+INVALID_OTP_MESSAGE = "Invalid or expired OTP."
+OTP_SENT_GENERIC_MESSAGE = "If an account exists for this email, an OTP has been sent."
 
 
 def _get_user_by_email(email):
@@ -54,19 +66,8 @@ def _build_tokens_for_user(user):
 
 
 def _get_valid_otp(user, purpose, code):
-    otp = (
-        OneTimePassword.objects.filter(
-            user=user,
-            purpose=purpose,
-            code=code,
-            is_used=False,
-        )
-        .order_by("-created_at")
-        .first()
-    )
-    if otp is None or otp.is_expired:
-        return None
-    return otp
+    # Attempt-limited: 5 wrong guesses burns the OTP (see OneTimePassword.verify).
+    return OneTimePassword.verify(user, purpose, code)
 
 
 @extend_schema(
@@ -83,6 +84,7 @@ def _get_valid_otp(user, purpose, code):
 )
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([SignUpThrottle, *OTP_SEND_THROTTLES])
 def sign_up(request):
     serializer = SignUpSerializer(data=request.data)
     if not serializer.is_valid():
@@ -117,8 +119,9 @@ def sign_up(request):
 
     try:
         issue_and_send_otp(user, OtpPurpose.SIGNUP)
-    except Exception as exc:
-        return error_response("Failed to send OTP email.", {"detail": str(exc)}, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    except Exception:
+        logger.exception("Failed to send OTP email to user %s", user.pk)
+        return error_response("Failed to send OTP email.", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return created_response(
         {
@@ -136,26 +139,22 @@ def sign_up(request):
     responses={
         200: OtpVerifiedSuccessResponseSerializer,
         400: OpenApiResponse(response=ErrorResponseSerializer, description="OTP is invalid or expired."),
-        404: OpenApiResponse(response=ErrorResponseSerializer, description="User not found."),
     },
     description="Verify the sign-up OTP and receive JWT access and refresh tokens.",
 )
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes(OTP_VERIFY_THROTTLES)
 def verify_sign_up_otp(request):
     serializer = OtpVerificationSerializer(data=request.data)
     if not serializer.is_valid():
         return error_response("Validation error", serializer.errors, status.HTTP_400_BAD_REQUEST)
 
     user = _get_user_by_email(serializer.validated_data["email"])
-    if user is None:
-        return error_response("User not found.", status_code=status.HTTP_404_NOT_FOUND)
-
-    otp = _get_valid_otp(user, OtpPurpose.SIGNUP, serializer.validated_data["otp"])
+    otp = _get_valid_otp(user, OtpPurpose.SIGNUP, serializer.validated_data["otp"]) if user else None
     if otp is None:
-        return error_response("Invalid or expired OTP.", status_code=status.HTTP_400_BAD_REQUEST)
+        return error_response(INVALID_OTP_MESSAGE, status_code=status.HTTP_400_BAD_REQUEST)
 
-    otp.mark_used()
     user.is_active = True
     user.is_email_verified = True
     user.save(update_fields=["is_active", "is_email_verified", "updated_at"])
@@ -183,6 +182,7 @@ def verify_sign_up_otp(request):
 )
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes([SignInThrottle])
 def sign_in(request):
     serializer = SignInSerializer(data=request.data)
     if not serializer.is_valid():
@@ -234,13 +234,13 @@ def sign_in(request):
     responses={
         200: SuccessMessageResponseSerializer,
         400: OpenApiResponse(response=ErrorResponseSerializer, description="OTP resend is not allowed for the current user state."),
-        404: OpenApiResponse(response=ErrorResponseSerializer, description="User not found."),
         500: OpenApiResponse(response=ErrorResponseSerializer, description="OTP email sending failed."),
     },
     description="Resend a 4 digit OTP for sign-up verification.",
 )
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes(OTP_SEND_THROTTLES)
 def resend_otp(request):
     serializer = ResendOtpSerializer(data=request.data)
     if not serializer.is_valid():
@@ -248,7 +248,7 @@ def resend_otp(request):
 
     user = _get_user_by_email(serializer.validated_data["email"])
     if user is None:
-        return error_response("User not found.", status_code=status.HTTP_404_NOT_FOUND)
+        return success_response(message=OTP_SENT_GENERIC_MESSAGE)
 
     purpose = serializer.validated_data["purpose"]
     if purpose == OtpPurpose.SIGNUP and user.is_email_verified:
@@ -256,8 +256,9 @@ def resend_otp(request):
 
     try:
         issue_and_send_otp(user, purpose)
-    except Exception as exc:
-        return error_response("Failed to send OTP email.", {"detail": str(exc)}, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    except Exception:
+        logger.exception("Failed to send OTP email to user %s", user.pk)
+        return error_response("Failed to send OTP email.", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return success_response(message="OTP sent successfully.")
 
@@ -308,13 +309,13 @@ def me(request):
     responses={
         200: SuccessMessageResponseSerializer,
         400: OpenApiResponse(response=ErrorResponseSerializer, description="Validation error."),
-        404: OpenApiResponse(response=ErrorResponseSerializer, description="User not found."),
         500: OpenApiResponse(response=ErrorResponseSerializer, description="OTP email sending failed."),
     },
     description="Send a 4 digit OTP to the user's email for forgot-password flow.",
 )
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes(OTP_SEND_THROTTLES)
 def forgot_password_request_otp(request):
     serializer = ForgotPasswordRequestOtpSerializer(data=request.data)
     if not serializer.is_valid():
@@ -322,14 +323,15 @@ def forgot_password_request_otp(request):
 
     user = _get_user_by_email(serializer.validated_data["email"])
     if user is None:
-        return error_response("User not found.", status_code=status.HTTP_404_NOT_FOUND)
+        return success_response(message=OTP_SENT_GENERIC_MESSAGE)
 
     cache.delete(_forgot_password_verified_cache_key(user.email))
 
     try:
         issue_and_send_otp(user, OtpPurpose.FORGOT_PASSWORD)
-    except Exception as exc:
-        return error_response("Failed to send OTP email.", {"detail": str(exc)}, status.HTTP_500_INTERNAL_SERVER_ERROR)
+    except Exception:
+        logger.exception("Failed to send OTP email to user %s", user.pk)
+        return error_response("Failed to send OTP email.", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     return success_response(message="OTP sent successfully.")
 
@@ -341,26 +343,22 @@ def forgot_password_request_otp(request):
     responses={
         200: SuccessMessageResponseSerializer,
         400: OpenApiResponse(response=ErrorResponseSerializer, description="Validation error or OTP invalid/expired."),
-        404: OpenApiResponse(response=ErrorResponseSerializer, description="User not found."),
     },
     description="Verify forgot-password OTP before setting a new password.",
 )
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes(OTP_VERIFY_THROTTLES)
 def forgot_password_verify_otp(request):
     serializer = ForgotPasswordVerifyOtpSerializer(data=request.data)
     if not serializer.is_valid():
         return error_response("Validation error", serializer.errors, status.HTTP_400_BAD_REQUEST)
 
     user = _get_user_by_email(serializer.validated_data["email"])
-    if user is None:
-        return error_response("User not found.", status_code=status.HTTP_404_NOT_FOUND)
-
-    otp = _get_valid_otp(user, OtpPurpose.FORGOT_PASSWORD, serializer.validated_data["otp"])
+    otp = _get_valid_otp(user, OtpPurpose.FORGOT_PASSWORD, serializer.validated_data["otp"]) if user else None
     if otp is None:
-        return error_response("Invalid or expired OTP.", status_code=status.HTTP_400_BAD_REQUEST)
+        return error_response(INVALID_OTP_MESSAGE, status_code=status.HTTP_400_BAD_REQUEST)
 
-    otp.mark_used()
     cache.set(_forgot_password_verified_cache_key(user.email), True, timeout=600)
 
     return success_response(message="OTP verified successfully.")
@@ -373,22 +371,19 @@ def forgot_password_verify_otp(request):
     responses={
         200: SuccessMessageResponseSerializer,
         400: OpenApiResponse(response=ErrorResponseSerializer, description="Validation error or OTP invalid/expired."),
-        404: OpenApiResponse(response=ErrorResponseSerializer, description="User not found."),
     },
     description="Set a new password using email and matching confirm password after OTP has already been verified.",
 )
 @api_view(["POST"])
 @permission_classes([AllowAny])
+@throttle_classes(OTP_VERIFY_THROTTLES)
 def forgot_password_reset(request):
     serializer = ForgotPasswordResetSerializer(data=request.data)
     if not serializer.is_valid():
         return error_response("Validation error", serializer.errors, status.HTTP_400_BAD_REQUEST)
 
     user = _get_user_by_email(serializer.validated_data["email"])
-    if user is None:
-        return error_response("User not found.", status_code=status.HTTP_404_NOT_FOUND)
-
-    if not cache.get(_forgot_password_verified_cache_key(user.email)):
+    if user is None or not cache.get(_forgot_password_verified_cache_key(user.email)):
         return error_response(
             "OTP verification required before resetting password.",
             status_code=status.HTTP_400_BAD_REQUEST,

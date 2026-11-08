@@ -1,3 +1,4 @@
+import logging
 from datetime import timedelta
 from django.db import transaction
 from django.db.models import F, Avg
@@ -51,6 +52,9 @@ from students.serializers import (
 from teachers.models import StudentBooking, GeneralInfo
 from students.models import StudentNotification
 
+
+
+logger = logging.getLogger(__name__)
 
 def _serialize_session_data(session_obj, teacher_profile_id=None, extra_fields=None):
     from datetime import datetime as dt
@@ -609,7 +613,8 @@ def cancel_booking(request, booking_id):
     except StudentBooking.DoesNotExist:
         return error_response("Booking not found.", status_code=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return error_response(f"Cancellation failed: {str(e)}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.exception("Booking cancellation failed for booking %s", booking_id)
+        return error_response("Cancellation failed. Please try again.", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(

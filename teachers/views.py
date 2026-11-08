@@ -1,3 +1,4 @@
+import logging
 from drf_spectacular.utils import OpenApiResponse, extend_schema, OpenApiParameter, OpenApiTypes
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes, parser_classes
@@ -39,6 +40,9 @@ from django.db import transaction
 from django.db.models import F, Sum, Min
 from datetime import datetime, timedelta
 
+
+
+logger = logging.getLogger(__name__)
 
 @extend_schema(
     methods=["GET"],
@@ -484,7 +488,7 @@ def student_book_slot(request):
                     slot_time_str = start_time.strftime("%I:%M %p")
                     send_teacher_booking_email.delay(teacher_email, student_name, slot_date_str, slot_time_str)
                 except Exception as e:
-                    print(f"Failed to queue teacher email: {str(e)}")
+                    logger.exception("Failed to queue teacher booking email")
 
                 try:
                     session_start = tz.make_aware(datetime.combine(date, start_time))
@@ -494,10 +498,10 @@ def student_book_slot(request):
                     elif tz.now() < session_start:
                         send_class_reminder_push_notification.delay(request.user.id, slot_instance.id)
                 except Exception as e:
-                    print(f"Failed to queue push notification: {str(e)}")
+                    logger.exception("Failed to queue class reminder")
 
             except ImportError:
-                print("Celery not available, skipping notifications.")
+                logger.warning("Celery not available, skipping booking notifications.")
             
             res_serializer = StudentBookingSerializer(booking)
             return success_response(res_serializer.data, message="Slot booked successfully.", status_code=status.HTTP_201_CREATED)
@@ -509,7 +513,8 @@ def student_book_slot(request):
                 "You have already booked a session at this date and time.",
                 status_code=status.HTTP_400_BAD_REQUEST
             )
-        return error_response(f"Booking failed: {str(e)}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.exception("Booking failed for user %s", request.user.pk)
+        return error_response("Booking failed. Please try again.", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(
@@ -537,7 +542,8 @@ def student_cancel_booking(request, booking_id):
     except StudentBooking.DoesNotExist:
         return error_response("Booking not found.", status_code=status.HTTP_404_NOT_FOUND)
     except Exception as e:
-        return error_response(f"Cancellation failed: {str(e)}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.exception("Booking cancellation failed for booking %s", booking_id)
+        return error_response("Cancellation failed. Please try again.", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(
@@ -695,7 +701,8 @@ def teacher_remove_student(request, student_id):
             
             return success_response(message=f"Student removed from the list successfully. Deleted {deleted_count} pending booking(s).")
     except Exception as e:
-        return error_response(f"Removal failed: {str(e)}", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        logger.exception("Removing student %s failed", student_id)
+        return error_response("Removal failed. Please try again.", status_code=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 @extend_schema(
@@ -717,9 +724,6 @@ def teacher_request_cancellation(request):
     except TeacherProfile.DoesNotExist:
         return error_response("Teacher profile not found.", status_code=status.HTTP_404_NOT_FOUND)
 
-    print("\n" + "="*50)
-    print("FRONTEND PAYLOAD:", request.data)
-    print("="*50 + "\n")
     serializer = CancellationRequestSubmitSerializer(data=request.data)
     if serializer.is_valid():
         request_type = serializer.validated_data["request_type"]

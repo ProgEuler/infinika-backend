@@ -2,3 +2,16 @@
 venv
 db.sqlite3
 __pycache__/
+# Secrets, dumps, runtime state
+project_root/.env
+*.sql
+*.dump
+celerybeat-schedule*
+debug_*.txt
+.codex
+scratch/
+query_db.py
+
+# User uploads (never commit; existing course/audio assets stay tracked)
+media/
+staticfiles/

@@ -1,43 +1,32 @@
-
-import os
-
-from decouple import config
-from dotenv import load_dotenv 
-
-import os
+from datetime import timedelta
 from pathlib import Path
-from decouple import config
-from dotenv import load_dotenv 
-from pathlib import Path
+
+from decouple import Csv, config
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
-# Quick-start development settings - unsuitable for production
-# See https://docs.djangoproject.com/en/4.2/howto/deployment/checklist/
-
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = config('SECRET_KEY')
+SECRET_KEY = config("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+# Defaults to off; set DEBUG=True only in a local .env.
+DEBUG = config("DEBUG", default=False, cast=bool)
 
-ALLOWED_HOSTS = ['*']
-SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+ALLOWED_HOSTS = config("ALLOWED_HOSTS", default="localhost,127.0.0.1", cast=Csv())
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = True
 
-CSRF_TRUSTED_ORIGINS = [
-    'https://formal-springer-chances-solely.trycloudflare.com',
-    'https://grace-edition-prominent-blog.trycloudflare.com',
-    'http://127.0.0.1:8000',
-    'http://127.0.0.1:7090',
-    'http://127.0.0.1:6565',
-    'http://localhost:8000',
-    'http://localhost:7090',
-    'http://localhost:6565',
-    'https://*.ngrok-free.app',
-]
+CSRF_TRUSTED_ORIGINS = config(
+    "CSRF_TRUSTED_ORIGINS",
+    default="http://localhost:8000,http://127.0.0.1:8000",
+    cast=Csv(),
+)
+
+SECURE_CONTENT_TYPE_NOSNIFF = True
+# Turn on once the admin is only reached over HTTPS (it breaks admin login over plain http).
+SESSION_COOKIE_SECURE = CSRF_COOKIE_SECURE = config("SECURE_COOKIES", default=False, cast=bool)
 
 # Application definition
 
@@ -224,12 +213,14 @@ SPECTACULAR_SETTINGS = {
     "SWAGGER_UI_SETTINGS": {
         "persistAuthorization": True,
     },
+    "SERVE_PERMISSIONS": ["rest_framework.permissions.AllowAny"],
 }
 
 
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
+    'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -259,18 +250,23 @@ TEMPLATES = [
 ]
 
 
-
-from datetime import timedelta 
-
-# put on your settings.py file below INSTALLED_APPS
 REST_FRAMEWORK = {
-
-
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-
+    # Secure by default: public endpoints opt in with @permission_classes([AllowAny]).
     'DEFAULT_PERMISSION_CLASSES': (
-        'rest_framework.permissions.AllowAny',
+        'rest_framework.permissions.IsAuthenticated',
     ),
+    # Number of reverse proxies (nginx, Cloudflare...) in front of gunicorn, so
+    # throttles key on the real client IP instead of a spoofable X-Forwarded-For.
+    "NUM_PROXIES": config("NUM_PROXIES", default=1, cast=int),
+    "DEFAULT_THROTTLE_RATES": {
+        "sign_in": "10/min",
+        "sign_up": "10/hour",
+        "otp_send_ip": "20/hour",
+        "otp_send_email": "5/hour",
+        "otp_verify_ip": "20/hour",
+        "otp_verify_email": "10/hour",
+    },
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
@@ -323,8 +319,6 @@ WSGI_APPLICATION = 'project_root.wsgi.application'
 
 
 
-from decouple import config
-
 DATABASES = {
     "default": {
         "ENGINE": config("DB_ENGINE"),
@@ -363,14 +357,6 @@ AUTH_PASSWORD_VALIDATORS = [
 # https://docs.djangoproject.com/en/4.2/topics/i18n/
 
 
-EMAIL_BACKEND = config('EMAIL_BACKEND')
-EMAIL_HOST = config('EMAIL_HOST')
-EMAIL_PORT = config('EMAIL_PORT', cast=int)  
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
-
-
 LANGUAGE_CODE = 'en-us'
 
 TIME_ZONE = 'Asia/Dhaka'
@@ -384,7 +370,7 @@ USE_TZ = True
 # https://docs.djangoproject.com/en/4.2/howto/static-files/
 
 STATIC_URL = 'static/'
-STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+STATIC_ROOT = BASE_DIR / "staticfiles"
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
 
@@ -392,3 +378,30 @@ MEDIA_ROOT = BASE_DIR / "media"
 # https://docs.djangoproject.com/en/4.2/ref/settings/#default-auto-field
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+
+# Shared across gunicorn workers (LocMem is per-process). Needed for auth
+# throttles and the forgot-password "OTP verified" flag. The table is created
+# by accounts migration 0008.
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.db.DatabaseCache",
+        "LOCATION": "django_cache",
+    }
+}
+
+STORAGES = {
+    "default": {"BACKEND": "django.core.files.storage.FileSystemStorage"},
+    "staticfiles": {"BACKEND": "whitenoise.storage.CompressedStaticFilesStorage"},
+}
+
+# Django only serves /media/ itself while this is on. Turn it off once nginx
+# (or object storage) serves uploads.
+SERVE_MEDIA = config("SERVE_MEDIA", default=True, cast=bool)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {"console": {"class": "logging.StreamHandler"}},
+    "root": {"handlers": ["console"], "level": "INFO"},
+}
