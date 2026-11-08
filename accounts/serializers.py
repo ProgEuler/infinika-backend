@@ -1,4 +1,6 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from rest_framework import serializers
 from accounts.models import OtpPurpose
 
@@ -90,7 +92,8 @@ class UserSerializer(serializers.ModelSerializer):
 
 
 class PushTokenUpdateSerializer(serializers.Serializer):
-    expo_push_token = serializers.CharField(max_length=255)
+    # Blank clears the token (sent by the app on logout).
+    expo_push_token = serializers.CharField(max_length=255, allow_blank=True)
 
 
 class TogglePushNotificationSerializer(serializers.Serializer):
@@ -129,7 +132,7 @@ class OtpVerificationSerializer(serializers.Serializer):
 
 class ResendOtpSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    purpose = serializers.ChoiceField(choices=[OtpPurpose.SIGNUP])
+    purpose = serializers.ChoiceField(choices=[OtpPurpose.SIGNUP, OtpPurpose.FORGOT_PASSWORD])
 
     def validate_email(self, value):
         return value.lower()
@@ -232,6 +235,24 @@ class ForgotPasswordResetSerializer(serializers.Serializer):
     def validate(self, attrs):
         if attrs["new_password"] != attrs["confirm_password"]:
             raise serializers.ValidationError({"confirm_password": "Confirm password does not match new password."})
+        return attrs
+
+
+class ChangePasswordSerializer(serializers.Serializer):
+    current_password = serializers.CharField(write_only=True)
+    new_password = serializers.CharField(write_only=True, min_length=8)
+    confirm_password = serializers.CharField(write_only=True, min_length=8)
+
+    def validate(self, attrs):
+        if attrs["new_password"] != attrs["confirm_password"]:
+            raise serializers.ValidationError({"confirm_password": "Confirm password does not match new password."})
+        user = self.context["request"].user
+        if not user.check_password(attrs["current_password"]):
+            raise serializers.ValidationError({"current_password": "Current password is incorrect."})
+        try:
+            validate_password(attrs["new_password"], user=user)
+        except DjangoValidationError as exc:
+            raise serializers.ValidationError({"new_password": list(exc.messages)})
         return attrs
 
 

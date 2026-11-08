@@ -1,7 +1,7 @@
 import logging
 from datetime import timedelta
 from django.db import transaction
-from django.db.models import F, Avg
+from django.db.models import F, Avg, Q
 from django.utils import timezone
 from decimal import Decimal, ROUND_HALF_UP
 from drf_spectacular.utils import OpenApiResponse, extend_schema, OpenApiParameter
@@ -544,16 +544,18 @@ def student_dashboard(request):
     student_name = profile.student_name if profile.student_name else request.user.full_name
     
     # 2. Upcoming Session
-    now = timezone.now()
+    now = timezone.localtime()
+    # Skip sessions that already started earlier today.
     upcoming_booking = StudentBooking.objects.filter(
+        Q(slot__date__gt=now.date()) | Q(slot__date=now.date(), slot__start_time__gte=now.time()),
         student=request.user,
-        slot__date__gte=now.date()
-    ).order_by("slot__date", "slot__start_time").first()
+    ).select_related("slot").order_by("slot__date", "slot__start_time").first()
     
     upcoming_session = None
     if upcoming_booking:
         slot = upcoming_booking.slot
         upcoming_session = {
+            "id": upcoming_booking.id,
             "title": "English Lesson",
             "date": slot.date.strftime("%a, %b %d"),
             "time": slot.start_time.strftime("%I:%M %p"),
@@ -604,7 +606,7 @@ def cancel_booking(request, booking_id):
             slot = booking.slot
             
             # Decrement booked_students
-            TeacherSlot.objects.filter(pk=slot.pk).update(booked_students=F("booked_students") - 1)
+            TeacherSlot.objects.filter(pk=slot.pk, booked_students__gt=0).update(booked_students=F("booked_students") - 1)
             
             # Delete booking
             booking.delete()

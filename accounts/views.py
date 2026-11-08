@@ -31,6 +31,7 @@ from accounts.serializers import (
     PushTokenUpdateSerializer,
     TogglePushNotificationSerializer,
     AccountDeleteSerializer,
+    ChangePasswordSerializer,
 )
 from accounts.utils import issue_and_send_otp
 from common.responses import created_response, error_response, success_response
@@ -415,10 +416,41 @@ def update_push_token(request):
         return error_response("Validation error", serializer.errors, status.HTTP_400_BAD_REQUEST)
 
     user = request.user
-    user.expo_push_token = serializer.validated_data["expo_push_token"]
-    user.save(update_fields=["expo_push_token", "updated_at"])
+    token = serializer.validated_data["expo_push_token"].strip() or None
+    with transaction.atomic():
+        if token:
+            # A device token belongs to one account at a time; otherwise the
+            # previous user on a shared phone keeps receiving notifications.
+            User.objects.filter(expo_push_token=token).exclude(pk=user.pk).update(expo_push_token=None)
+        user.expo_push_token = token
+        user.save(update_fields=["expo_push_token", "updated_at"])
 
-    return success_response(message="Push token updated successfully.")
+    return success_response(message="Push token updated successfully." if token else "Push token cleared.")
+
+
+@extend_schema(
+    tags=["Accounts Authentication"],
+    operation_id="accounts_change_password",
+    request=ChangePasswordSerializer,
+    responses={
+        200: SuccessMessageResponseSerializer,
+        400: OpenApiResponse(response=ErrorResponseSerializer, description="Validation error or wrong current password."),
+        401: OpenApiResponse(response=ErrorResponseSerializer, description="Unauthenticated."),
+    },
+    description="Change the logged-in user's password (students and teachers). Requires the current password.",
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([SignInThrottle])
+def change_password(request):
+    serializer = ChangePasswordSerializer(data=request.data, context={"request": request})
+    if not serializer.is_valid():
+        return error_response("Validation error", serializer.errors, status.HTTP_400_BAD_REQUEST)
+
+    user = request.user
+    user.set_password(serializer.validated_data["new_password"])
+    user.save(update_fields=["password", "updated_at"])
+    return success_response(message="Password changed successfully.")
 
 
 @extend_schema(

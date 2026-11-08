@@ -533,7 +533,7 @@ def student_cancel_booking(request, booking_id):
             slot = booking.slot
             
             # Decrement booked_students
-            TeacherSlot.objects.filter(pk=slot.pk).update(booked_students=F("booked_students") - 1)
+            TeacherSlot.objects.filter(pk=slot.pk, booked_students__gt=0).update(booked_students=F("booked_students") - 1)
             
             # Delete booking
             booking.delete()
@@ -694,7 +694,7 @@ def teacher_remove_student(request, student_id):
             
             # Decrement booked_students for each slot
             for booking in bookings:
-                TeacherSlot.objects.filter(pk=booking.slot.pk).update(booked_students=F("booked_students") - 1)
+                TeacherSlot.objects.filter(pk=booking.slot.pk, booked_students__gt=0).update(booked_students=F("booked_students") - 1)
             
             # Delete bookings
             deleted_count, _ = bookings.delete()

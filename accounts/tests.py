@@ -167,3 +167,59 @@ class SecureDefaultsTests(APITestCase):
     def test_api_requires_auth_by_default(self):
         r = self.client.get("/api/teachers/available-slots/?date=2030-01-07")
         self.assertEqual(r.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class ChangePasswordAndPushTokenTests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(
+            email="student@example.com", full_name="Student", password="StrongPass123"
+        )
+        self.client.force_authenticate(self.user)
+
+    def test_change_password_requires_correct_current_password(self):
+        r = self.client.post(
+            "/api/accounts/change-password/",
+            {"current_password": "wrong", "new_password": "NewStrong456", "confirm_password": "NewStrong456"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn("current_password", r.data["errors"])
+
+    def test_change_password_success(self):
+        r = self.client.post(
+            "/api/accounts/change-password/",
+            {"current_password": "StrongPass123", "new_password": "NewStrong456", "confirm_password": "NewStrong456"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.check_password("NewStrong456"))
+
+    def test_push_token_moves_between_accounts_and_can_be_cleared(self):
+        other = User.objects.create_user(email="other@example.com", full_name="Other", password="x" * 10)
+        other.expo_push_token = "ExponentPushToken[abc]"
+        other.save()
+
+        r = self.client.post("/api/accounts/update-push-token/", {"expo_push_token": "ExponentPushToken[abc]"}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        other.refresh_from_db()
+        self.user.refresh_from_db()
+        self.assertIsNone(other.expo_push_token)
+        self.assertEqual(self.user.expo_push_token, "ExponentPushToken[abc]")
+
+        r = self.client.post("/api/accounts/update-push-token/", {"expo_push_token": ""}, format="json")
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.expo_push_token)
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class ResendOtpTests(APITestCase):
+    def test_resend_works_for_forgot_password(self):
+        user = User.objects.create_user(email="r@example.com", full_name="R", password="StrongPass123")
+        r = self.client.post(
+            "/api/accounts/resend-otp/", {"email": user.email, "purpose": "forgot_password"}, format="json"
+        )
+        self.assertEqual(r.status_code, status.HTTP_200_OK)
+        self.assertEqual(OneTimePassword.objects.filter(user=user, purpose=OtpPurpose.FORGOT_PASSWORD).count(), 1)
+        self.assertEqual(len(mail.outbox), 1)
