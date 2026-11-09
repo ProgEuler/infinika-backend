@@ -321,3 +321,107 @@ class OtpEmailAndTestCommandTests(APITestCase):
 
         with self.assertRaises(CommandError):
             call_command("send_test_email", "nobody@example.com", "--real", stdout=StringIO())
+
+
+def _fake_response(payload, status_code=200):
+    from unittest import mock
+
+    response = mock.Mock(status_code=status_code)
+    response.json.return_value = payload
+    return response
+
+
+class PushNotificationTests(APITestCase):
+    TOKEN = "ExponentPushToken[device1]"
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+        self.user = User.objects.create_user(email="push@example.com", full_name="Push", password="StrongPass123")
+        self.user.expo_push_token = self.TOKEN
+        self.user.save()
+        self.client.force_authenticate(self.user)
+
+    def _patch(self, *responses):
+        from unittest import mock
+
+        return mock.patch("common.push.requests.post", side_effect=list(responses))
+
+    def test_send_push_reports_ok_ticket(self):
+        from common.push import send_push
+
+        with self._patch(_fake_response({"data": [{"status": "ok", "id": "t1"}]})) as post:
+            results = send_push(self.TOKEN, "Hi", "There")
+        self.assertEqual(results, [{"token": self.TOKEN, "status": "ok", "id": "t1", "error": None, "message": None}])
+        self.assertEqual(post.call_args.kwargs["json"][0]["channelId"], "default")
+
+    def test_device_not_registered_clears_token(self):
+        from common.push import send_push
+
+        ticket = {"status": "error", "message": "not registered", "details": {"error": "DeviceNotRegistered"}}
+        with self._patch(_fake_response({"data": [ticket]})):
+            results = send_push(self.TOKEN, "Hi", "There")
+        self.assertEqual(results[0]["error"], "DeviceNotRegistered")
+        self.user.refresh_from_db()
+        self.assertIsNone(self.user.expo_push_token)
+
+    def test_network_error_never_raises(self):
+        import requests
+
+        from common.utils import send_expo_push_notification
+
+        with self._patch(requests.ConnectionError("down")):
+            results = send_expo_push_notification([self.TOKEN], "Hi", "There")
+        self.assertEqual(results[0]["status"], "error")
+
+    def test_test_push_endpoint_delivered(self):
+        with self._patch(
+            _fake_response({"data": [{"status": "ok", "id": "t1"}]}),
+            _fake_response({"data": {"t1": {"status": "ok"}}}),
+        ), self._no_sleep():
+            r = self.client.post("/api/accounts/test-push/")
+        self.assertEqual(r.status_code, status.HTTP_200_OK, r.data)
+        self.assertEqual(r.data["data"]["stage"], "delivered")
+
+    def test_test_push_endpoint_reports_invalid_credentials(self):
+        receipt = {"status": "error", "message": "no FCM key", "details": {"error": "InvalidCredentials"}}
+        with self._patch(
+            _fake_response({"data": [{"status": "ok", "id": "t1"}]}),
+            _fake_response({"data": {"t1": receipt}}),
+        ), self._no_sleep():
+            r = self.client.post("/api/accounts/test-push/")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(r.data["errors"]["stage"], "receipt")
+        self.assertIn("FCM V1", r.data["errors"]["hint"])
+
+    def test_test_push_endpoint_without_token(self):
+        self.user.expo_push_token = None
+        self.user.save()
+        with self._patch() as post:
+            r = self.client.post("/api/accounts/test-push/")
+        self.assertEqual(r.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(r.data["errors"]["stage"], "token")
+        post.assert_not_called()
+
+    def test_send_test_push_command(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        with self._patch(
+            _fake_response({"data": [{"status": "ok", "id": "t1"}]}),
+            _fake_response({"data": {"t1": {"status": "ok"}}}),
+        ), self._no_sleep():
+            call_command("send_test_push", "push@example.com", stdout=out)
+        self.assertIn("DELIVERED", out.getvalue())
+
+        out = StringIO()
+        call_command("send_test_push", "--list", stdout=out)
+        self.assertIn(self.TOKEN, out.getvalue())
+
+    def _no_sleep(self):
+        from unittest import mock
+
+        return mock.patch("common.push.time.sleep")

@@ -9,7 +9,7 @@ These are a second line of defence; the hard limit on OTP guessing is the
 per-OTP attempt counter in OneTimePassword.verify().
 """
 
-from rest_framework.throttling import SimpleRateThrottle
+from rest_framework.throttling import SimpleRateThrottle, UserRateThrottle
 
 
 class _IpThrottle(SimpleRateThrottle):
@@ -53,3 +53,7 @@ class OtpVerifyEmailThrottle(_EmailThrottle):
 
 OTP_SEND_THROTTLES = [OtpSendIpThrottle, OtpSendEmailThrottle]
 OTP_VERIFY_THROTTLES = [OtpVerifyIpThrottle, OtpVerifyEmailThrottle]
+
+
+class TestPushThrottle(UserRateThrottle):
+    scope = "test_push"

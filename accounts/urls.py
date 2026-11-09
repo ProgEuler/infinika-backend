@@ -13,6 +13,7 @@ urlpatterns = [
     path("refresh-token/", views.refresh_token, name="refresh_token"),
     path("update-push-token/", views.update_push_token, name="update_push_token"),
     path("toggle-push-notification/", views.toggle_push_notification, name="toggle_push_notification"),
+    path("test-push/", views.test_push, name="test_push"),
     path("change-password/", views.change_password, name="change_password"),
     path("delete-account/", views.delete_account, name="delete_account"),
     path("me/", views.me, name="me"),

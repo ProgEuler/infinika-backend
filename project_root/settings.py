@@ -266,6 +266,7 @@ REST_FRAMEWORK = {
         "otp_send_email": "5/hour",
         "otp_verify_ip": "20/hour",
         "otp_verify_email": "10/hour",
+        "test_push": "10/hour",
     },
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',

@@ -40,7 +40,9 @@ from common.throttles import (
     OTP_VERIFY_THROTTLES,
     SignInThrottle,
     SignUpThrottle,
+    TestPushThrottle,
 )
+from common.push import send_test_push
 from common.utils import send_expo_push_notification
 
 User = get_user_model()
@@ -426,6 +428,34 @@ def update_push_token(request):
         user.save(update_fields=["expo_push_token", "updated_at"])
 
     return success_response(message="Push token updated successfully." if token else "Push token cleared.")
+
+
+@extend_schema(
+    tags=["Accounts Authentication"],
+    operation_id="accounts_test_push",
+    request=None,
+    responses={
+        200: OpenApiResponse(description="Test notification delivered (or accepted and still pending)."),
+        400: OpenApiResponse(response=ErrorResponseSerializer, description="No token saved, or Expo/FCM rejected it."),
+        401: OpenApiResponse(response=ErrorResponseSerializer, description="Unauthenticated."),
+    },
+    description="Send a test push notification to the logged-in user's saved Expo token and report where it failed.",
+)
+@api_view(["POST"])
+@permission_classes([IsAuthenticated])
+@throttle_classes([TestPushThrottle])
+def test_push(request):
+    result = send_test_push(request.user.expo_push_token, wait_seconds=4)
+    data = {
+        "stage": result["stage"],
+        "hint": result["hint"],
+        "ticket": result["ticket"],
+        "receipt": result["receipt"],
+        "push_enabled": request.user.is_push_notification,
+    }
+    if result["ok"]:
+        return success_response(data, message="Test notification sent.")
+    return error_response("Test notification failed.", data, status.HTTP_400_BAD_REQUEST)
 
 
 @extend_schema(
