@@ -11,12 +11,18 @@ services:
       - postgres_data:/var/lib/postgresql/data
     ports:
       - "5438:5432"
+    healthcheck:
+      # Lets `web` wait until Postgres accepts connections before migrating.
+      test: ["CMD-SHELL", "pg_isready -h localhost -U $${POSTGRES_USER:-postgres}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
   web:
     build: .
     container_name: study_pulse_web
     restart: always
-    command: bash -c "python manage.py collectstatic --noinput && python manage.py migrate && gunicorn project_root.wsgi:application --bind 0.0.0.0:8000"
+    command: bash -c "python manage.py collectstatic --noinput && python manage.py ensure_db_schema && python manage.py migrate && gunicorn project_root.wsgi:application --bind 0.0.0.0:8000"
     volumes:
       - .:/app
       - static_volume:/app/staticfiles
@@ -28,7 +34,8 @@ services:
     environment:
       - DB_HOST=db
     depends_on:
-      - db
+      db:
+        condition: service_healthy
 
 volumes:
   postgres_data:
