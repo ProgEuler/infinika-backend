@@ -97,3 +97,20 @@ class DashboardUpcomingSessionTests(APITestCase):
         r = self.client.post(f"/api/students/cancel-booking/{booking.id}/")
         self.assertEqual(r.status_code, 200)
         self.assertFalse(StudentBooking.objects.filter(pk=booking.pk).exists())
+
+
+class ProfileSetupPayloadTests(APITestCase):
+    def test_get_returns_saved_basic_details(self):
+        student = User.objects.create_user(email="p@example.com", full_name="Aysel M", password="StrongPass123")
+        self.client.force_authenticate(student)
+        r = self.client.patch(
+            "/api/students/profile-setup/",
+            {"phone": "+994501112233", "age": 21, "gender": "female"},
+            format="json",
+        )
+        self.assertEqual(r.status_code, 200)
+        data = self.client.get("/api/students/profile-setup/").data["data"]
+        self.assertEqual(data["name"], "Aysel M")
+        self.assertEqual(data["phone"], "+994501112233")
+        self.assertEqual(data["age"], 21)
+        self.assertEqual(data["gender"], "female")

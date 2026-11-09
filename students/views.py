@@ -120,6 +120,11 @@ def _build_profile_setup_payload(request, user, profile):
     )
     has_location = StudentLocation.objects.filter(student=user).exists()
     return {
+        # Basic details, so edit screens can pre-fill what was saved before.
+        "name": user.full_name,
+        "phone": profile.phone_number,
+        "age": profile.age,
+        "gender": profile.gender,
         "last_achieved_degree": profile.last_achieved_degree,
         "profile_picture": request.build_absolute_uri(profile.profile_picture.url) if profile.profile_picture else None,
         "parents_name": profile.parents_name,
