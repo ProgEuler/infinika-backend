@@ -223,3 +223,101 @@ class ResendOtpTests(APITestCase):
         self.assertEqual(r.status_code, status.HTTP_200_OK)
         self.assertEqual(OneTimePassword.objects.filter(user=user, purpose=OtpPurpose.FORGOT_PASSWORD).count(), 1)
         self.assertEqual(len(mail.outbox), 1)
+
+
+class ResendBackendTests(APITestCase):
+    def _backend(self):
+        from common.email_backends import ResendEmailBackend
+
+        return ResendEmailBackend(api_key="re_test_key")
+
+    def test_sends_text_and_html_to_resend_api(self):
+        from unittest import mock
+
+        from django.core.mail import EmailMultiAlternatives
+
+        msg = EmailMultiAlternatives("Hi", "plain body", "Study Pulse <no-reply@example.com>", ["a@example.com"])
+        msg.attach_alternative("<b>html body</b>", "text/html")
+        backend = self._backend()
+        fake = mock.Mock(status_code=200)
+        fake.json.return_value = {"id": "email_123"}
+        with mock.patch("requests.Session.post", return_value=fake) as post:
+            self.assertEqual(backend.send_messages([msg]), 1)
+
+        url = post.call_args.args[0]
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(url, "https://api.resend.com/emails")
+        self.assertEqual(payload["to"], ["a@example.com"])
+        self.assertEqual(payload["from"], "Study Pulse <no-reply@example.com>")
+        self.assertEqual(payload["text"], "plain body")
+        self.assertEqual(payload["html"], "<b>html body</b>")
+        self.assertEqual(backend.last_message_id, "email_123")
+
+    def test_api_error_raises_with_resend_message(self):
+        from unittest import mock
+
+        from django.core.mail import EmailMessage
+
+        from common.email_backends import ResendError
+
+        fake = mock.Mock(status_code=403, text="forbidden")
+        fake.json.return_value = {"message": "The yourdomain.com domain is not verified."}
+        with mock.patch("requests.Session.post", return_value=fake):
+            with self.assertRaisesMessage(ResendError, "domain is not verified"):
+                self._backend().send_messages([EmailMessage("s", "b", "x@example.com", ["a@example.com"])])
+
+    def test_missing_api_key_is_a_clear_error(self):
+        from django.core.exceptions import ImproperlyConfigured
+        from django.core.mail import EmailMessage
+
+        from common.email_backends import ResendEmailBackend
+
+        with self.settings(RESEND_API_KEY=""):
+            with self.assertRaises(ImproperlyConfigured):
+                ResendEmailBackend().send_messages([EmailMessage("s", "b", "x@example.com", ["a@example.com"])])
+
+
+@override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
+class OtpEmailAndTestCommandTests(APITestCase):
+    def test_otp_email_has_code_in_subject_text_and_html(self):
+        from accounts.utils import issue_and_send_otp
+
+        user = User.objects.create_user(email="o@example.com", full_name="Aysel", password="StrongPass123")
+        otp = issue_and_send_otp(user, OtpPurpose.SIGNUP)
+        msg = mail.outbox[0]
+        self.assertIn(otp.code, msg.subject)
+        self.assertIn(otp.code, msg.body)
+        html = msg.alternatives[0][0]
+        self.assertIn(otp.code, html)
+        self.assertIn("Aysel", html)
+
+    def test_send_test_email_command_sample_code(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        out = StringIO()
+        call_command("send_test_email", "check@example.com", stdout=out)
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertEqual(mail.outbox[0].to, ["check@example.com"])
+        self.assertIn("Sent. Code:", out.getvalue())
+        self.assertFalse(OneTimePassword.objects.exists())  # sample mode creates no OTP
+
+    def test_send_test_email_command_real_otp(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+
+        user = User.objects.create_user(email="real@example.com", full_name="Real", password="StrongPass123")
+        call_command("send_test_email", "real@example.com", "--real", "--purpose", "forgot_password", stdout=StringIO())
+        otp = OneTimePassword.objects.get(user=user, purpose=OtpPurpose.FORGOT_PASSWORD, is_used=False)
+        self.assertIn(otp.code, mail.outbox[0].subject)
+
+    def test_send_test_email_command_rejects_unknown_user_for_real(self):
+        from io import StringIO
+
+        from django.core.management import call_command
+        from django.core.management.base import CommandError
+
+        with self.assertRaises(CommandError):
+            call_command("send_test_email", "nobody@example.com", "--real", stdout=StringIO())

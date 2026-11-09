@@ -288,13 +288,25 @@ SIMPLE_JWT = {
 
 
 
-# Email Configuration from .env file
-EMAIL_BACKEND = config('EMAIL_BACKEND')
-EMAIL_HOST = config('EMAIL_HOST')
-EMAIL_PORT = config('EMAIL_PORT', cast=int)  
-EMAIL_USE_TLS = config('EMAIL_USE_TLS', cast=bool)
-EMAIL_HOST_USER = config('EMAIL_HOST_USER')
-EMAIL_HOST_PASSWORD = config('EMAIL_HOST_PASSWORD')
+# Email
+# With RESEND_API_KEY set, all mail goes through Resend's HTTPS API and the
+# SMTP settings below are ignored. Without it, EMAIL_BACKEND decides (default:
+# print emails to the console/logs instead of sending them).
+RESEND_API_KEY = config("RESEND_API_KEY", default="")
+if RESEND_API_KEY:
+    EMAIL_BACKEND = "common.email_backends.ResendEmailBackend"
+else:
+    EMAIL_BACKEND = config("EMAIL_BACKEND", default="django.core.mail.backends.console.EmailBackend")
+DEFAULT_FROM_EMAIL = config("DEFAULT_FROM_EMAIL", default="Study Pulse <onboarding@resend.dev>")
+SERVER_EMAIL = DEFAULT_FROM_EMAIL
+
+# SMTP (only used when EMAIL_BACKEND is the SMTP backend)
+EMAIL_HOST = config("EMAIL_HOST", default="localhost")
+EMAIL_PORT = config("EMAIL_PORT", default=587, cast=int)
+EMAIL_USE_TLS = config("EMAIL_USE_TLS", default=True, cast=bool)
+EMAIL_HOST_USER = config("EMAIL_HOST_USER", default="")
+EMAIL_HOST_PASSWORD = config("EMAIL_HOST_PASSWORD", default="")
+EMAIL_TIMEOUT = 15
 
 
 
