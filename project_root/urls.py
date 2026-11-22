@@ -10,6 +10,7 @@ from drf_spectacular.views import (
     SpectacularSwaggerView,
 )
 from common.dashboard_views import dashboard_view
+from support.views import privacy_policy_page, delete_account_page
 
 # Force correct MIME types for audio files so browsers play instead of download
 mimetypes.add_type("audio/mpeg", ".mpeg")
@@ -29,6 +30,9 @@ urlpatterns = [
     path("api/schema/", SpectacularAPIView.as_view(), name="schema"),
     path("api/swagger/", SpectacularSwaggerView.as_view(url_name="schema"), name="swagger-ui"),
 
+    # Public HTML pages
+    path("privacy-policy/", privacy_policy_page, name="privacy_policy"),
+    path("delete-account/", delete_account_page, name="delete_account"),
 ]
 
 if settings.DEBUG:

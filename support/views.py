@@ -1,3 +1,6 @@
+from datetime import datetime
+
+from django.shortcuts import render
 from drf_spectacular.utils import extend_schema
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
@@ -8,6 +11,23 @@ from support.models import Policy, HelpSupport, PlayStoreQRCode
 from support.serializers import PolicySerializer, HelpSupportSerializer, PlayStoreQRCodeSerializer
 
 
+# ── Public HTML pages (not API) ──────────────────────────────────
+
+def privacy_policy_page(request):
+    policies = Policy.objects.all()
+    return render(request, "pages/privacy_policy.html", {
+        "policies": policies,
+        "year": datetime.now().year,
+    })
+
+
+def delete_account_page(request):
+    return render(request, "pages/delete_account.html", {
+        "year": datetime.now().year,
+    })
+
+
+# ── API views ────────────────────────────────────────────────────
 
 @extend_schema(
     tags=["Support & Policies"],
@@ -53,4 +73,3 @@ def play_store_qr_view(request):
         return error_response("QR Code not found.", status_code=status.HTTP_404_NOT_FOUND)
     serializer = PlayStoreQRCodeSerializer(qr_code)
     return success_response(serializer.data, message="QR Code fetched successfully.")
-

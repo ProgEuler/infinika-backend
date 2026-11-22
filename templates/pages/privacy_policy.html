@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Privacy Policy – Study Pulse</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, sans-serif;
+            line-height: 1.7;
+            color: #333;
+            background: #f8f9fa;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 40px 24px;
+        }
+        header {
+            background: #1a73e8;
+            color: #fff;
+            padding: 32px 24px;
+            text-align: center;
+        }
+        header h1 { font-size: 28px; font-weight: 700; }
+        header p { margin-top: 8px; opacity: 0.85; font-size: 14px; }
+        .card {
+            background: #fff;
+            border-radius: 12px;
+            padding: 32px;
+            margin-top: 24px;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+        }
+        .card h2 {
+            font-size: 20px;
+            color: #1a73e8;
+            margin-bottom: 12px;
+            padding-bottom: 8px;
+            border-bottom: 2px solid #e8f0fe;
+        }
+        .card p, .card li {
+            font-size: 15px;
+            color: #555;
+            margin-bottom: 10px;
+        }
+        .card ul { padding-left: 20px; }
+        footer {
+            text-align: center;
+            padding: 32px 24px;
+            font-size: 13px;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Privacy Policy</h1>
+        <p>Study Pulse</p>
+    </header>
+
+    <div class="container">
+        {% for policy in policies %}
+        <div class="card">
+            <h2>{{ policy.title }}</h2>
+            <div>{{ policy.content|linebreaksbr }}</div>
+        </div>
+        {% empty %}
+        <div class="card">
+            <h2>Privacy Policy</h2>
+            <p>We value your privacy. Study Pulse collects only the information necessary to provide our educational services.</p>
+
+            <h2 style="margin-top: 24px;">Information We Collect</h2>
+            <ul>
+                <li>Account information (name, email, phone number)</li>
+                <li>Profile details (learning interests, proficiency level)</li>
+                <li>Usage data (assessment scores, course enrollments)</li>
+                <li>Device information (push notification tokens)</li>
+            </ul>
+
+            <h2 style="margin-top: 24px;">How We Use Your Information</h2>
+            <ul>
+                <li>To provide and improve our educational services</li>
+                <li>To personalize your learning experience</li>
+                <li>To send important notifications about your courses and sessions</li>
+                <li>To communicate with you about your account</li>
+            </ul>
+
+            <h2 style="margin-top: 24px;">Data Security</h2>
+            <p>We implement industry-standard security measures to protect your personal information from unauthorized access, alteration, or disclosure.</p>
+
+            <h2 style="margin-top: 24px;">Your Rights</h2>
+            <ul>
+                <li>Access your personal data</li>
+                <li>Request correction of your data</li>
+                <li>Request deletion of your account and data</li>
+                <li>Opt out of push notifications</li>
+            </ul>
+
+            <h2 style="margin-top: 24px;">Contact Us</h2>
+            <p>If you have questions about this privacy policy, please contact us through the app's Help &amp; Support section.</p>
+        </div>
+        {% endfor %}
+    </div>
+
+    <footer>
+        &copy; {{ year }} Study Pulse. All rights reserved.
+    </footer>
+</body>
+</html>
