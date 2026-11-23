@@ -4,6 +4,7 @@ db.sqlite3
 __pycache__/
 # Secrets, dumps, runtime state
 project_root/.env
+firebase-credentials.json
 *.sql
 *.dump
 celerybeat-schedule*

@@ -19,6 +19,15 @@ class UserSerializer(serializers.ModelSerializer):
     level_id = serializers.SerializerMethodField()
     student_id = serializers.SerializerMethodField()
     attempt_id = serializers.SerializerMethodField()
+    # Google/Apple-only accounts have no password: the app hides password prompts for them.
+    has_password = serializers.SerializerMethodField()
+    is_social_account = serializers.SerializerMethodField()
+
+    def get_has_password(self, obj):
+        return obj.has_usable_password()
+
+    def get_is_social_account(self, obj):
+        return bool(obj.firebase_uid)
 
     def get_is_location(self, obj):
         if obj.role == "student":
@@ -88,7 +97,7 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ("id", "student_id", "full_name", "email", "role", "is_email_verified", "is_profile_completed", "is_first_assement_completed", "is_location", "expo_push_token", "is_push_notification", "profile", "level_id", "attempt_id")
+        fields = ("id", "student_id", "full_name", "email", "role", "is_email_verified", "has_password", "is_social_account", "is_profile_completed", "is_first_assement_completed", "is_location", "expo_push_token", "is_push_notification", "profile", "level_id", "attempt_id")
 
 
 class PushTokenUpdateSerializer(serializers.Serializer):
@@ -107,6 +116,12 @@ class SignUpSerializer(serializers.Serializer):
 
     def validate_email(self, value):
         return value.lower()
+
+
+class FirebaseLoginSerializer(serializers.Serializer):
+    id_token = serializers.CharField(help_text="Firebase ID token from Google / Apple sign-in.")
+    full_name = serializers.CharField(required=False, allow_blank=True, max_length=255)
+    nonce = serializers.CharField(required=False, allow_blank=True, max_length=255, help_text="Raw Apple nonce.")
 
 
 class SignInSerializer(serializers.Serializer):
@@ -257,4 +272,5 @@ class ChangePasswordSerializer(serializers.Serializer):
 
 
 class AccountDeleteSerializer(serializers.Serializer):
-    password = serializers.CharField(write_only=True)
+    # Not needed for Google/Apple-only accounts, which have no password.
+    password = serializers.CharField(write_only=True, required=False, allow_blank=True)

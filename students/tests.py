@@ -114,3 +114,81 @@ class ProfileSetupPayloadTests(APITestCase):
         self.assertEqual(data["phone"], "+994501112233")
         self.assertEqual(data["age"], 21)
         self.assertEqual(data["gender"], "female")
+
+
+class ProfileSetupValidationTests(APITestCase):
+    def setUp(self):
+        self.student = User.objects.create_user(email="v@example.com", full_name="Kamran A", password="StrongPass123")
+        self.client.force_authenticate(self.student)
+
+    def _post(self, payload):
+        return self.client.post("/api/students/profile-setup/", payload, format="json")
+
+    def test_rejects_bad_phone_age_and_gender(self):
+        r = self._post({"phone": "12ab", "age": 3, "gender": "robot", "parents_phone_number": "123"})
+        self.assertEqual(r.status_code, 400)
+        for field in ("phone", "age", "gender", "parents_phone_number"):
+            self.assertIn(field, r.data["errors"])
+
+    def test_normalizes_phone_and_gender(self):
+        r = self._post({"phone": "+994 (50) 111-22-33", "age": 30, "gender": "Female"})
+        self.assertIn(r.status_code, (200, 201), r.data)
+        data = self.client.get("/api/students/profile-setup/").data["data"]
+        self.assertEqual(data["phone"], "+994501112233")
+        self.assertEqual(data["gender"], "female")
+
+    def test_blank_name_and_zero_age_from_old_builds_are_ignored(self):
+        r = self._post({"name": "", "age": 0, "preferred_study_time": ["Morning"]})
+        self.assertIn(r.status_code, (200, 201), r.data)
+        self.student.refresh_from_db()
+        self.assertEqual(self.student.full_name, "Kamran A")
+        self.assertIsNone(self.client.get("/api/students/profile-setup/").data["data"]["age"])
+
+
+class DashboardQuizScoreTests(APITestCase):
+    def setUp(self):
+        from accounts.models import User
+
+        self.user = User.objects.create_user("quiz@example.com", "Quiz Student", "StrongPass123")
+        self.client.force_authenticate(self.user)
+
+    def test_no_attempts_gives_null_quiz_score(self):
+        res = self.client.get("/api/students/dashboard/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIsNone(res.data["data"]["quiz_score"])
+
+    def test_quiz_score_average_change_and_history(self):
+        from datetime import timedelta
+
+        from django.utils import timezone
+
+        from students.models import (
+            AssessmentAttemptStatus,
+            AssessmentQuestion,
+            AssessmentSection,
+            AssessmentTemplate,
+            StudentAssessmentAttempt,
+        )
+
+        template = AssessmentTemplate.objects.create(name="Elementary")
+        section = AssessmentSection.objects.create(template=template, title="Grammar", skill=AssessmentSection._meta.get_field("skill").choices[0][0])
+        for i in range(10):
+            AssessmentQuestion.objects.create(
+                section=section,
+                question_type=AssessmentQuestion._meta.get_field("question_type").choices[0][0],
+                prompt=f"Q{i}",
+                order=i + 1,
+                marks=2,
+            )  # 20 marks total
+        now = timezone.now()
+        for days_ago, score in [(10, 10), (3, 16), (1, 18)]:  # 50% last week; 80% and 90% this week
+            StudentAssessmentAttempt.objects.create(
+                student=self.user,
+                template=template,
+                status=AssessmentAttemptStatus.EVALUATED,
+                evaluated_at=now - timedelta(days=days_ago),
+                total_score=score,
+            )
+
+        quiz = self.client.get("/api/students/dashboard/").data["data"]["quiz_score"]
+        self.assertEqual(quiz, {"score": 85, "change": 35, "history": [50, 80, 90]})

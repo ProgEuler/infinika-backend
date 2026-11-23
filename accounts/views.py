@@ -14,6 +14,7 @@ from accounts.models import OneTimePassword, OtpPurpose, UserRole
 from accounts.serializers import (
     OtpVerificationSerializer,
     ErrorResponseSerializer,
+    FirebaseLoginSerializer,
     ForgotPasswordRequestOtpSerializer,
     ForgotPasswordResetSerializer,
     ForgotPasswordVerifyOtpSerializer,
@@ -33,6 +34,7 @@ from accounts.serializers import (
     AccountDeleteSerializer,
     ChangePasswordSerializer,
 )
+from accounts.social import SocialLoginError, firebase_login as social_firebase_login
 from accounts.utils import issue_and_send_otp
 from common.responses import created_response, error_response, success_response
 from common.throttles import (
@@ -42,6 +44,7 @@ from common.throttles import (
     SignUpThrottle,
     TestPushThrottle,
 )
+from common.firebase import delete_firebase_user
 from common.push import send_test_push
 from common.utils import send_expo_push_notification
 
@@ -227,6 +230,56 @@ def sign_in(request):
             "is_profile_completed": user.is_profile_completed,
         },
         message="Sign in completed successfully.",
+    )
+
+
+@extend_schema(
+    tags=["Accounts Authentication"],
+    operation_id="accounts_firebase_login",
+    request=FirebaseLoginSerializer,
+    responses={
+        200: SignInSuccessResponseSerializer,
+        400: OpenApiResponse(response=ErrorResponseSerializer, description="Validation error."),
+        401: OpenApiResponse(response=ErrorResponseSerializer, description="Invalid Firebase token."),
+        403: OpenApiResponse(response=ErrorResponseSerializer, description="Account deactivated or admin."),
+        409: OpenApiResponse(response=ErrorResponseSerializer, description="Email exists and was not verified by the provider."),
+    },
+    description=(
+        "Sign in or sign up with Google / Apple. The app signs in with the provider through Firebase Auth "
+        "and sends the Firebase ID token (plus the raw nonce for Apple). New emails get a verified student account."
+    ),
+)
+@api_view(["POST"])
+@permission_classes([AllowAny])
+@throttle_classes([SignInThrottle])
+def firebase_login(request):
+    serializer = FirebaseLoginSerializer(data=request.data)
+    if not serializer.is_valid():
+        return error_response("Validation error", serializer.errors, status.HTTP_400_BAD_REQUEST)
+
+    data = serializer.validated_data
+    try:
+        user, is_new_user = social_firebase_login(
+            data["id_token"], full_name=data.get("full_name", ""), nonce=data.get("nonce", "")
+        )
+    except SocialLoginError as exc:
+        return error_response(exc.message, status_code=exc.status_code)
+
+    if user.role == "student" and not is_new_user:
+        from students.views import _compute_profile_completion
+        is_completed = _compute_profile_completion(user)
+        if user.is_profile_completed != is_completed:
+            user.is_profile_completed = is_completed
+            user.save(update_fields=["is_profile_completed", "updated_at"])
+
+    return success_response(
+        {
+            "user": UserSerializer(user, context={"request": request}).data,
+            "tokens": _build_tokens_for_user(user),
+            "is_profile_completed": user.is_profile_completed,
+            "is_new_user": is_new_user,
+        },
+        message="Account created successfully." if is_new_user else "Sign in completed successfully.",
     )
 
 
@@ -527,10 +580,14 @@ def delete_account(request):
         return error_response("Validation error", serializer.errors, status.HTTP_400_BAD_REQUEST)
 
     user = request.user
-    password = serializer.validated_data["password"]
+    password = serializer.validated_data.get("password", "")
 
-    if not user.check_password(password):
+    # Google/Apple-only accounts have no password; their valid session is the proof.
+    needs_password = user.has_usable_password() or not user.firebase_uid
+    if needs_password and not user.check_password(password):
         return error_response("Invalid password. Account deletion failed.", status_code=status.HTTP_400_BAD_REQUEST)
 
+    firebase_uid = user.firebase_uid
     user.delete()
+    delete_firebase_user(firebase_uid)
     return success_response(message="Account deleted successfully.")

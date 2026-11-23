@@ -1,5 +1,5 @@
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 from django.db import transaction
 from django.db.models import F, Avg, Q
 from django.utils import timezone
@@ -244,7 +244,8 @@ def profile_setup(request):
 
 
     with transaction.atomic():
-        if "name" in data:
+        # Older app builds send name="" from onboarding; never let that wipe the sign-up name.
+        if data.get("name", "").strip():
             request.user.full_name = data["name"].strip()
             request.user.save(update_fields=["full_name", "updated_at"])
 
@@ -554,17 +555,23 @@ def student_dashboard(request):
     upcoming_booking = StudentBooking.objects.filter(
         Q(slot__date__gt=now.date()) | Q(slot__date=now.date(), slot__start_time__gte=now.time()),
         student=request.user,
-    ).select_related("slot").order_by("slot__date", "slot__start_time").first()
-    
+    ).select_related("slot", "slot__teacher").order_by("slot__date", "slot__start_time").first()
+
     upcoming_session = None
     if upcoming_booking:
         slot = upcoming_booking.slot
+        starts_at = timezone.make_aware(datetime.combine(slot.date, slot.start_time))
         upcoming_session = {
             "id": upcoming_booking.id,
             "title": "English Lesson",
+            # The teacher's own title for the class, e.g. "Unit 7 - Past Perfect".
+            "subtitle": slot.title if slot.title and slot.title != "General Class" else "",
             "date": slot.date.strftime("%a, %b %d"),
             "time": slot.start_time.strftime("%I:%M %p"),
+            "starts_at": starts_at.isoformat(),
+            "is_today": slot.date == now.date(),
             "mode": slot.mode,
+            "teacher_name": getattr(slot.teacher, "name", "") or "",
             "meeting_link": slot.accessible_meeting_link,
         }
 
@@ -590,6 +597,7 @@ def student_dashboard(request):
         "profile_picture": request.build_absolute_uri(profile.profile_picture.url) if profile.profile_picture else None,
         "upcoming_session": upcoming_session,
         "my_progress": my_progress,
+        "quiz_score": _dashboard_quiz_score(request.user, now),
     }
     
     return success_response(payload, message="Dashboard data fetched successfully.")
@@ -1656,3 +1664,46 @@ def confirm_enrollment(request, course_id):
         {"is_confirm": True},
         message="Enrollment confirmed successfully."
     )
+
+
+def _attempt_percentage(attempt, max_cache):
+    """Score of an evaluated attempt as 0-100, using the template's total question marks."""
+    template_id = attempt.template_id
+    if template_id not in max_cache:
+        max_cache[template_id] = sum(
+            q.marks for s in attempt.template.sections.all() for q in s.questions.all()
+        ) or 0
+    total_max = max_cache[template_id]
+    if not total_max or attempt.total_score is None:
+        return None
+    return max(0, min(100, round(float(attempt.total_score) * 100 / float(total_max))))
+
+
+def _dashboard_quiz_score(student, now):
+    """
+    Home "Quiz Score" card: average of the last 7 days (falls back to the latest
+    score), change vs the 7 days before, and the last few scores for the sparkline.
+    """
+    attempts = list(
+        StudentAssessmentAttempt.objects.filter(
+            student=student, status=AssessmentAttemptStatus.EVALUATED, evaluated_at__isnull=False
+        )
+        .select_related("template")
+        .prefetch_related("template__sections__questions")
+        .order_by("-evaluated_at")[:30]
+    )
+    max_cache = {}
+    scored = [(a.evaluated_at, p) for a in attempts if (p := _attempt_percentage(a, max_cache)) is not None]
+    if not scored:
+        return None
+
+    week_ago, two_weeks_ago = now - timedelta(days=7), now - timedelta(days=14)
+    last_week = [p for at, p in scored if at >= week_ago]
+    prev_week = [p for at, p in scored if two_weeks_ago <= at < week_ago]
+    score = round(sum(last_week) / len(last_week)) if last_week else scored[0][1]
+    change = score - round(sum(prev_week) / len(prev_week)) if (last_week and prev_week) else None
+    return {
+        "score": score,
+        "change": change,
+        "history": [p for _, p in reversed(scored[:8])],  # oldest first
+    }

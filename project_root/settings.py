@@ -393,6 +393,10 @@ MEDIA_ROOT = BASE_DIR / "media"
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
+# Google / Apple sign-in: Firebase service-account key used to verify ID tokens
+# (Firebase console > Project settings > Service accounts > Generate new private key).
+FIREBASE_CREDENTIALS = config("FIREBASE_CREDENTIALS", default=str(BASE_DIR / "firebase-credentials.json"))
+
 # Shared across gunicorn workers (LocMem is per-process). Needed for auth
 # throttles and the forgot-password "OTP verified" flag. The table is created
 # by accounts migration 0008.

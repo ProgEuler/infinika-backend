@@ -2,7 +2,22 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema_field
 from rest_framework import serializers
 
+import re
+
 from students.models import AssessmentTemplate, AssessmentSection, AssessmentQuestion, AssessmentOption, StudentAssessmentAttempt, StudentLocation
+
+STUDENT_AGE_MIN = 5
+STUDENT_AGE_MAX = 100
+GENDER_CHOICES = ("male", "female", "other")
+_PHONE_RE = re.compile(r"^\+?\d{7,15}$")
+
+
+def _validate_phone(value):
+    """Blank is allowed; otherwise 7-15 digits with an optional leading +. Returns it without separators."""
+    value = re.sub(r"[\s\-().]", "", value or "")
+    if value and not _PHONE_RE.match(value):
+        raise serializers.ValidationError("Enter a valid phone number (7-15 digits, optional leading +).")
+    return value
 
 
 class StudentProfileSetupUpsertSerializer(serializers.Serializer):
@@ -46,6 +61,26 @@ class StudentProfileSetupUpsertSerializer(serializers.Serializer):
             seen.add(value)
             normalized.append(value)
         return normalized
+
+    def validate_phone(self, value):
+        return _validate_phone(value)
+
+    def validate_parents_phone_number(self, value):
+        return _validate_phone(value)
+
+    def validate_age(self, value):
+        # 0 is what older app builds sent for "not given".
+        if value in (None, 0):
+            return None
+        if not (STUDENT_AGE_MIN <= value <= STUDENT_AGE_MAX):
+            raise serializers.ValidationError(f"Enter an age between {STUDENT_AGE_MIN} and {STUDENT_AGE_MAX}.")
+        return value
+
+    def validate_gender(self, value):
+        value = (value or "").strip().lower()
+        if value and value not in GENDER_CHOICES:
+            raise serializers.ValidationError("Choose male, female or other.")
+        return value
 
     def validate_core_reasons_of_learning(self, value):
         return self._normalize_list(value)

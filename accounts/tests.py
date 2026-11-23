@@ -453,3 +453,109 @@ class SeedDemoAccountsTests(APITestCase):
 
         call_command("seed_demo_accounts", "--delete", stdout=StringIO())
         self.assertFalse(User.objects.filter(email__in=ALL_EMAILS).exists())
+
+
+class FirebaseLoginTests(APITestCase):
+    """Google / Apple sign-in. Firebase token verification is mocked."""
+
+    URL = "/api/accounts/firebase-login/"
+
+    def setUp(self):
+        from django.core.cache import cache
+
+        cache.clear()
+
+    def _token(self, uid="fb-1", email="new@example.com", verified=True, provider="google.com", name="Ann Lee", nonce=None):
+        firebase = {"sign_in_provider": provider}
+        if nonce:
+            firebase["sign_in_attributes"] = {"nonce": nonce}
+        return {"uid": uid, "email": email, "email_verified": verified, "name": name, "firebase": firebase}
+
+    def _post(self, decoded, **extra):
+        from unittest import mock
+
+        with mock.patch("accounts.social.verify_id_token", return_value=decoded):
+            return self.client.post(self.URL, {"id_token": "tok", **extra}, format="json")
+
+    def test_new_email_creates_verified_student(self):
+        res = self._post(self._token())
+        self.assertEqual(res.status_code, 200, res.data)
+        self.assertTrue(res.data["data"]["is_new_user"])
+        self.assertIn("access", res.data["data"]["tokens"])
+        user = User.objects.get(email="new@example.com")
+        self.assertEqual((user.role, user.full_name, user.firebase_uid), (UserRole.STUDENT, "Ann Lee", "fb-1"))
+        self.assertTrue(user.is_active and user.is_email_verified)
+        self.assertFalse(user.has_usable_password())
+        self.assertFalse(res.data["data"]["user"]["has_password"])
+
+    def test_second_login_finds_user_by_uid(self):
+        self._post(self._token())
+        res = self._post(self._token(email="changed@example.com"))
+        self.assertFalse(res.data["data"]["is_new_user"])
+        self.assertEqual(User.objects.count(), 1)
+
+    def test_links_existing_verified_account_and_keeps_password(self):
+        user = User.objects.create_user("old@example.com", "Old", "StrongPass123")
+        res = self._post(self._token(uid="fb-2", email="OLD@example.com"))
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(res.data["data"]["is_new_user"])
+        user.refresh_from_db()
+        self.assertEqual(user.firebase_uid, "fb-2")
+        self.assertTrue(user.check_password("StrongPass123"))
+
+    def test_unverified_provider_email_cannot_link(self):
+        User.objects.create_user("old@example.com", "Old", "StrongPass123")
+        res = self._post(self._token(email="old@example.com", verified=False))
+        self.assertEqual(res.status_code, 409)
+
+    def test_unfinished_signup_is_taken_over_and_password_dropped(self):
+        user = User.objects.create_user("p@example.com", "Squatter", "StrongPass123", is_active=False, is_email_verified=False)
+        res = self._post(self._token(email="p@example.com"))
+        self.assertEqual(res.status_code, 200)
+        user.refresh_from_db()
+        self.assertTrue(user.is_active and user.is_email_verified)
+        self.assertFalse(user.has_usable_password())
+        self.assertEqual(user.full_name, "Ann Lee")
+
+    def test_rejects_admin_deactivated_and_other_providers(self):
+        User.objects.create_superuser("admin@example.com", "Admin", "StrongPass123")
+        self.assertEqual(self._post(self._token(email="admin@example.com")).status_code, 403)
+        User.objects.create_user("off@example.com", "Off", "x", is_active=False, is_email_verified=True)
+        self.assertEqual(self._post(self._token(uid="u3", email="off@example.com")).status_code, 403)
+        self.assertEqual(self._post(self._token(uid="u4", provider="password")).status_code, 401)
+
+    def test_apple_nonce_is_checked(self):
+        import hashlib
+
+        hashed = hashlib.sha256(b"raw-nonce").hexdigest()
+        token = self._token(provider="apple.com", nonce=hashed)
+        self.assertEqual(self._post(token).status_code, 401)
+        self.assertEqual(self._post(token, nonce="wrong").status_code, 401)
+        self.assertEqual(self._post(token, nonce="raw-nonce").status_code, 200)
+
+    def test_invalid_token_and_missing_config(self):
+        from unittest import mock
+
+        from common.firebase import FirebaseNotConfigured
+
+        with mock.patch("accounts.social.verify_id_token", side_effect=ValueError("bad")):
+            self.assertEqual(self.client.post(self.URL, {"id_token": "x"}, format="json").status_code, 401)
+        with mock.patch("accounts.social.verify_id_token", side_effect=FirebaseNotConfigured("no file")):
+            self.assertEqual(self.client.post(self.URL, {"id_token": "x"}, format="json").status_code, 503)
+
+    def test_social_only_account_can_delete_without_password(self):
+        from unittest import mock
+
+        self._post(self._token())
+        user = User.objects.get(email="new@example.com")
+        self.client.force_authenticate(user)
+        with mock.patch("accounts.views.delete_firebase_user") as delete_fb:
+            res = self.client.post("/api/accounts/delete-account/", {}, format="json")
+        self.assertEqual(res.status_code, 200)
+        self.assertFalse(User.objects.filter(pk=user.pk).exists())
+        delete_fb.assert_called_once_with("fb-1")
+
+    def test_password_account_still_needs_password_to_delete(self):
+        user = User.objects.create_user("pw@example.com", "Pw", "StrongPass123")
+        self.client.force_authenticate(user)
+        self.assertEqual(self.client.post("/api/accounts/delete-account/", {}, format="json").status_code, 400)
