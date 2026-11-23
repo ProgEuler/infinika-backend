@@ -425,3 +425,31 @@ class PushNotificationTests(APITestCase):
         from unittest import mock
 
         return mock.patch("common.push.time.sleep")
+
+
+class SeedDemoAccountsTests(APITestCase):
+    def test_seed_creates_loginable_accounts_and_is_idempotent(self):
+        from io import StringIO
+
+        from django.core import mail
+        from django.core.management import call_command
+
+        from accounts.management.commands.seed_demo_accounts import ALL_EMAILS, DEMO_PASSWORD, TEACHER
+        from teachers.models import Teacher, TeacherProfile
+
+        call_command("seed_demo_accounts", stdout=StringIO())
+        call_command("seed_demo_accounts", stdout=StringIO())  # second run must not fail
+
+        self.assertEqual(User.objects.filter(email__in=ALL_EMAILS).count(), 3)
+        self.assertEqual(len(mail.outbox), 0)  # no teacher welcome email
+        teacher = User.objects.get(email=TEACHER)
+        self.assertEqual(teacher.role, UserRole.TEACHER)
+        self.assertTrue(Teacher.objects.filter(email=TEACHER).exists())
+        self.assertTrue(TeacherProfile.objects.filter(user=teacher).exists())
+
+        for email in ALL_EMAILS:
+            r = self.client.post("/api/accounts/sign-in/", {"email": email, "password": DEMO_PASSWORD}, format="json")
+            self.assertEqual(r.status_code, status.HTTP_200_OK, (email, r.data))
+
+        call_command("seed_demo_accounts", "--delete", stdout=StringIO())
+        self.assertFalse(User.objects.filter(email__in=ALL_EMAILS).exists())
